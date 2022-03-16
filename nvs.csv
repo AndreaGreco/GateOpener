@@ -1,0 +1,5 @@
+key,type,encoding,value
+storage,namespace,,
+wifi-ssid,data,string,Wi-Fi2
+wifi-pass,data,string,medionsamsug
+mdns-name,data,string,apricancello
