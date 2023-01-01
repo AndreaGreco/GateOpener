@@ -7,8 +7,6 @@
 #include "freertos/task.h"
 
 #include "esp_log.h"
-#include "driver/adc.h"
-#include "hal/adc_types.h"
 #include "nvs_flash.h"
 
 #include "esp_system.h"
@@ -45,11 +43,21 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t e
     case WIFI_EVENT_STA_START:
         esp_wifi_connect();
         break;
+
     case WIFI_EVENT_STA_DISCONNECTED:
+        wifi_event_sta_disconnected_t *d =event_data;
+        ESP_LOGI(TAG, "Disconnect AP, reason:%d", d->reason);
         if (s_retry_num < ESP_MAXIMUM_RETRY) {
-            esp_wifi_connect();
+            /* Wrong Password */
+            if(d->reason == WIFI_REASON_ASSOC_FAIL) {
+                power_up_set_wrong_pass(true);
+                power_up_set_mode(STARTUP_MODE__AP);
+                s_retry_num = ESP_MAXIMUM_RETRY;
+                esp_restart();
+            } else {
+                ESP_ERROR_CHECK_WITHOUT_ABORT( esp_wifi_connect() );
+            }
             s_retry_num++;
-            ESP_LOGI(TAG, "retry to connect to the AP");
         } else {
             xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
             xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
@@ -95,41 +103,6 @@ static void nvs_read_wifi_credential()
     sz = sizeof(wifi_config.sta.password);
     ESP_ERROR_CHECK( nvs_get_str(nvs_handle, NVS_WIFI_PASS__KEY, (char*) wifi_config.sta.password, &sz) );
     nvs_close(nvs_handle);
-}
-
-static void generate_hostname(char *hostname, size_t sz)
-{
-    uint8_t mac[6];
-
-    esp_read_mac(mac, ESP_MAC_WIFI_STA);
-    snprintf(hostname, sz, "%s-%02X%02X%02X", "Gate", mac[3], mac[4], mac[5]);
-}
-
-static void initialise_mdns(void)
-{
-    nvs_handle_t nvs_handle;
-    char hostname[64];
-    esp_err_t err;
-    size_t sz;
-
-    err = nvs_open(NVS_NAME, NVS_READONLY, &nvs_handle);
-    ESP_ERROR_CHECK(err);
-
-    sz = sizeof(hostname);
-    err = nvs_get_str(nvs_handle, NVS_MDNS_NAME__KEY, (char*) hostname, &sz);
-    if(err != ESP_OK) {
-        generate_hostname(hostname, sizeof(hostname));
-        ESP_LOGE(TAG, "mDNS NVS read fail with err:'%s'", esp_err_to_name(err));
-    }
-    nvs_close(nvs_handle);
-
-    err = mdns_init();
-    ESP_ERROR_CHECK(err);
-
-    err = mdns_hostname_set(hostname);
-    ESP_ERROR_CHECK(err);
-
-    ESP_LOGI(TAG, "mdns hostname set to: [%s]", hostname);
 }
 
 void wifi_init_sta(void)
@@ -186,16 +159,23 @@ void wifi_init_sta(void)
     if (bits & WIFI_CONNECTED_BIT) {
         ESP_LOGI(TAG, "connected to ap SSID:%s password:%s",
                  wifi_config.sta.ssid, wifi_config.sta.password);
+        power_up_set_wrong_pass(false);
     } else if (bits & WIFI_FAIL_BIT) {
         ESP_LOGI(TAG, "Failed to connect to SSID:%s, password:%s",
                  wifi_config.sta.ssid, wifi_config.sta.password);
+        power_up_set_mode(STARTUP_MODE__AP);
+        esp_restart();
     } else {
         ESP_LOGE(TAG, "UNEXPECTED EVENT");
+        power_up_set_mode(STARTUP_MODE__AP);
+        esp_restart();
     }
 
     sntp_setoperatingmode(SNTP_OPMODE_POLL);
     sntp_setservername(0, "pool.ntp.org");
     sntp_set_time_sync_notification_cb(time_sync_notification_cb);
 
+    start_config_server();
     sntp_init();
+    xTaskCreate(http_test_task, "Telegram", 8192, NULL, 10, NULL);
 }

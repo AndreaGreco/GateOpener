@@ -14,14 +14,30 @@
 #define EXAMPLE_MDNS_INSTANCE CONFIG_MDNS_INSTANCE
 static const char *TAG = "mdns-test";
 
-
 void app_main(void)
 {
-    ESP_ERROR_CHECK(nvs_flash_init());
+    esp_err_t err = nvs_flash_init();
+    if (err != ESP_OK) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        err = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(err);
+
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-    wifi_init_sta();
+    power_up_init();
+
+    switch (power_up_get_mode()) {
+    case STARTUP_MODE__STA:
+        ESP_LOGI(TAG,"Start in STA MODE");
+        wifi_init_sta();
+        break;
+    case STARTUP_MODE__AP:
+        ESP_LOGI(TAG,"Start in AP MODE");
+        wifi_init_softap();
+        break;
+    }
 
     power_driver_init();
 }

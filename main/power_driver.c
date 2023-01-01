@@ -11,7 +11,7 @@
 #include "nvs.h"
 #include "config.h"
 
-const char TAG[]="POW-DRV";
+static const char TAG[]="POW-DRV";
 
 #define GPIO_POWER_P1   26
 #define GPIO_POWER_P2   27
@@ -22,21 +22,20 @@ const char TAG[]="POW-DRV";
 
 #define ESP_INTR_FLAG_DEFAULT 0
 
-#define TIME_DEFAULT 250
+#define TIME_DEFAULT 175
 #define CYCLE_DEFAULT 5
 
 struct PowerLine_st {
-    SemaphoreHandle_t lock;
     uint32_t io_num;
 
     uint32_t down_time_ms;
     uint32_t up_time_ms;
-    unsigned int cycle_cnt;
+    uint32_t cycle_cnt;
 
     char name[8];
 };
 
-static xQueueHandle gpio_evt_queue = NULL;
+static QueueHandle_t gpio_evt_queue = NULL;
 static struct PowerLine_st *p1, *p2;
 
 static void IRAM_ATTR gpio_isr_handler(void* arg)
@@ -52,29 +51,29 @@ void drive_door_open(enum PowerLine pl)
         p2
     };
 
-    xQueueSend(gpio_evt_queue, pl_arr[pl], portMAX_DELAY);
+    ESP_LOGI(TAG, "Enqued new door open request for pl[%d]", pl);
+
+    xQueueSend(gpio_evt_queue, &pl_arr[pl], portMAX_DELAY);
 }
 
-static void drive_door_open__task(void *arg)
+static void drive_door_open_run(struct PowerLine_st *p)
 {
-    struct PowerLine_st *p = (struct PowerLine_st *)arg;
     int cnt;
 
-    ESP_LOGI(TAG, "Drive door IO:%d", p->io_num);
+    ESP_LOGI(TAG, "Drive door IO:%ld, level-now:%d", p->io_num, gpio_get_level(p->io_num));
 
     /* Door open command */
     for(cnt = 0; cnt < 5; cnt++) {
         gpio_set_level(p->io_num, 1);
-        ESP_LOGI(TAG, "Drive door IO:%d Drive:1", p->io_num);
-        vTaskDelay(pdMS_TO_TICKS(250));
-        ESP_LOGI(TAG, "Drive door IO:%d Drive:0", p->io_num);
+        ESP_LOGD(TAG, "Drive door IO:%ld Drive:1", p->io_num);
+        vTaskDelay(pdMS_TO_TICKS(p->up_time_ms));
+
+        ESP_LOGD(TAG, "Drive door IO:%ld Drive:0", p->io_num);
         gpio_set_level(p->io_num, 0);
-        vTaskDelay(pdMS_TO_TICKS(250));
+        vTaskDelay(pdMS_TO_TICKS(p->down_time_ms));
     }
 
-    xSemaphoreGive(p->lock);
     vTaskDelay(200);
-    vTaskDelete(NULL);
 }
 
 static struct PowerLine_st* PowerLine_init(uint32_t io_num, char *name)
@@ -85,7 +84,6 @@ static struct PowerLine_st* PowerLine_init(uint32_t io_num, char *name)
     char key[64];
 
     p = malloc(sizeof(struct PowerLine_st));
-    p->lock = xSemaphoreCreateBinary();
     p->io_num = io_num;
     strcpy(p->name, name);
 
@@ -96,26 +94,25 @@ static struct PowerLine_st* PowerLine_init(uint32_t io_num, char *name)
     err = nvs_get_u32(hdl, key, &p->down_time_ms);
     if(err != ESP_OK) {
         p->down_time_ms = TIME_DEFAULT;
-        ESP_LOGW(TAG, "Time down %s set to default", p->name);
+        ESP_LOGW(TAG, "Time down %s set to default:%d", p->name, TIME_DEFAULT);
     }
 
     snprintf(key, sizeof(key), "%s%s", NVS_POWER_LINE_UP_TIME__KEY, name);
     err = nvs_get_u32(hdl, key, &p->up_time_ms);
     if(err != ESP_OK) {
         p->up_time_ms = TIME_DEFAULT;
-        ESP_LOGW(TAG, "Time up %s set to default", p->name);
+        ESP_LOGW(TAG, "Time up %s set to default:%d", p->name, TIME_DEFAULT);
     }
 
     snprintf(key, sizeof(key), "%s%s", NVS_POWER_LINE_COUNT, name);
     err = nvs_get_u32(hdl, key, &p->cycle_cnt);
     if(err != ESP_OK) {
         p->cycle_cnt = CYCLE_DEFAULT;
-        ESP_LOGW(TAG, "Cycle %s set to default", p->name);
+        ESP_LOGW(TAG, "Cycle %s set to default:%d", p->name, CYCLE_DEFAULT);
     }
 
     nvs_close(hdl);
 
-    xSemaphoreGive(p->lock);
     return p;
 }
 
@@ -125,12 +122,7 @@ static void power_task(void* arg)
 
     for(;;) {
         if(xQueueReceive(gpio_evt_queue, &p, portMAX_DELAY)) {
-            if( xSemaphoreTake( p->lock, ( TickType_t ) pdMS_TO_TICKS(10) ) == pdTRUE ) {
-                ESP_LOGI(TAG, "Door open req");
-                xTaskCreate(drive_door_open__task, "Door Open", 2048, p, 9, NULL);
-            } else {
-                ESP_LOGI(TAG, "Door Mutex locked!");
-            }
+            drive_door_open_run(p);
         }
     }
 }

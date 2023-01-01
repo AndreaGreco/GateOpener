@@ -1,5 +1,7 @@
 key,type,encoding,value
 storage,namespace,,
-wifi-ssid,data,string,Wi-Fi2
-wifi-pass,data,string,medionsamsug
+wifi-ssid,data,string,none
+wifi-pass,data,string,none
 mdns-name,data,string,apricancello
+telegram-token,data,string,none
+telegram-chatid,data,string,none
