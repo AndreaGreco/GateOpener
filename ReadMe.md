@@ -9,9 +9,11 @@ With CURL:
 
 ### Mdns
 mdns can be set with related key default name: "door-lock.local"
+Can also set via telegram
 
 
 # Telegram Bot
+`/help` return all aviable command
 
 ## Create BOT and set credential inside ESP32
 

@@ -46,11 +46,16 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t e
 
     case WIFI_EVENT_STA_DISCONNECTED:
         wifi_event_sta_disconnected_t *d =event_data;
-        ESP_LOGI(TAG, "Disconnect AP, reason:%d", d->reason);
+
+        ESP_LOGI(TAG, "Disconnect AP, reason:%d retry:%d", d->reason, ESP_MAXIMUM_RETRY - s_retry_num);
+
         if (s_retry_num < ESP_MAXIMUM_RETRY) {
-            /* Wrong Password */
-            if(d->reason == WIFI_REASON_ASSOC_FAIL) {
-                power_up_set_wrong_pass(true);
+            /* Wrong Password, or AP Disconnected */
+            if(d->reason == WIFI_REASON_ASSOC_FAIL || d->reason == WIFI_REASON_NO_AP_FOUND) {
+
+                if(d->reason == WIFI_REASON_ASSOC_FAIL)
+                    power_up_set_wrong_pass(true);
+
                 power_up_set_mode(STARTUP_MODE__AP);
                 s_retry_num = ESP_MAXIMUM_RETRY;
                 esp_restart();
@@ -90,21 +95,6 @@ static wifi_config_t wifi_config = {
     },
 };
 
-static void nvs_read_wifi_credential()
-{
-    nvs_handle_t nvs_handle;
-    size_t sz;
-
-    ESP_ERROR_CHECK( nvs_open(NVS_NAME, NVS_READONLY, &nvs_handle) );
-
-    sz = sizeof(wifi_config.sta.ssid);
-    ESP_ERROR_CHECK( nvs_get_str(nvs_handle, NVS_WIFI_SSID__KEY, (char*) wifi_config.sta.ssid, &sz) );
-
-    sz = sizeof(wifi_config.sta.password);
-    ESP_ERROR_CHECK( nvs_get_str(nvs_handle, NVS_WIFI_PASS__KEY, (char*) wifi_config.sta.password, &sz) );
-    nvs_close(nvs_handle);
-}
-
 void wifi_init_sta(void)
 {
     esp_err_t err;
@@ -113,7 +103,11 @@ void wifi_init_sta(void)
 
     s_wifi_event_group = xEventGroupCreate();
 
-    nvs_read_wifi_credential();
+    err = nvs_read_wifi_credential(wifi_config.sta.ssid, wifi_config.sta.password);
+    if(err != ESP_OK) {
+        power_up_set_mode(STARTUP_MODE__AP);
+        esp_restart();
+    }
 
     esp_netif_create_default_wifi_sta();
     err = esp_wifi_init(&cfg);

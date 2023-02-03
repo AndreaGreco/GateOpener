@@ -39,6 +39,8 @@ enum PowerLine {
 /** Power Driver **/
 void power_driver_init(void);
 
+esp_err_t PowerLine_ConfigSetParams(char *name, uint32_t down_time_ms, uint32_t up_time_ms, uint32_t cycle_count, char**err_txt);
+
 /**
  * \brief Drive Door open
  *
@@ -62,6 +64,8 @@ struct PowerData_crc_st {
 
 extern struct PowerData_crc_st power_up_data;
 
+esp_err_t nvs_read_wifi_credential(uint8_t *ssid, uint8_t *password);
+void set_dns_hostname(char* new_hostname);
 void initialise_mdns(void);
 void start_config_server();
 bool get_scan_ap_no(int *p_ap_no, wifi_ap_record_t **p_ap_list);

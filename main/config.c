@@ -56,12 +56,43 @@ enum STARTUP_MODE power_up_get_mode() {
     return (enum STARTUP_MODE)power_up_data.data.mode;
 }
 
-static inline void set_dns_hostname(char* new_hostname)
+esp_err_t nvs_read_wifi_credential(uint8_t *ssid, uint8_t *password)
+{
+    nvs_handle_t nvs_handle;
+    esp_err_t err;
+    size_t sz;
+
+    err = nvs_open(NVS_NAME, NVS_READONLY, &nvs_handle);
+    if(err != ESP_OK)
+        return err;
+
+    if(ssid) {
+        /* ESP SSID len*/
+        sz = 32;
+        err = nvs_get_str(nvs_handle, NVS_WIFI_SSID__KEY, (char*) ssid, &sz);
+        if(err != ESP_OK)
+            goto close_and_ret;
+    }
+
+    if(password) {
+        /* ESP MAX Password len*/
+        sz = 64;
+        err = nvs_get_str(nvs_handle, NVS_WIFI_PASS__KEY, (char*) password, &sz);
+        if(err != ESP_OK)
+            goto close_and_ret;
+    }
+
+close_and_ret:
+    nvs_close(nvs_handle);
+    return err;
+}
+
+void set_dns_hostname(char* new_hostname)
 {
     nvs_handle_t nvs_handle;
 
     ESP_ERROR_CHECK( nvs_open(NVS_NAME, NVS_READWRITE, &nvs_handle) );
-    ESP_ERROR_CHECK( nvs_set_str(nvs_handle, NVS_WIFI_SSID__KEY, new_hostname) );
+    ESP_ERROR_CHECK( nvs_set_str(nvs_handle, NVS_MDNS_NAME__KEY, new_hostname) );
     ESP_ERROR_CHECK( nvs_commit(nvs_handle) );
 
     ESP_LOGI(TAG, "New credential saved");
@@ -89,6 +120,8 @@ void initialise_mdns(void)
         }
 
         nvs_close(nvs_handle);
+    } else {
+        strcpy(hostname, "apri-cancello-default");
     }
 
     err = mdns_init();

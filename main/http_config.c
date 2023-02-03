@@ -62,6 +62,19 @@ static esp_err_t system_info_get_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+static esp_err_t system_reset_in_sta(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    cJSON *root = cJSON_CreateObject();
+
+    cJSON_AddStringToObject(root, "reset", "okay");
+    cJSON_Delete(root);
+
+    power_up_set_mode(STARTUP_MODE__STA);
+    xTaskCreate(wait_and_restart_task, "Restart", 1024, NULL, 10, NULL);
+    return ESP_OK;
+}
+
 static inline void write_credential(char* ssid, char* pass, char* token, int64_t chatid)
 {
     nvs_handle_t nvs_handle;
@@ -174,7 +187,7 @@ static esp_err_t cofig_set_credential(httpd_req_t *req)
             /* Send a simple response */
             httpd_resp_set_status(req, HTTPD_200);
             httpd_resp_send(req, rpl, strlen(rpl));
-    
+
             xTaskCreate(wait_and_restart_task, "Restart", 1024, NULL, 10, NULL);
             power_up_set_mode(STARTUP_MODE__STA);
         } else {
@@ -277,6 +290,12 @@ const httpd_uri_t system_info_get_uri = {
     .handler = system_info_get_handler,
 };
 
+const httpd_uri_t system_reset_in_sta_uri = {
+    .uri = "/api/v1/system/reset-sta",
+    .method = HTTP_GET,
+    .handler = system_reset_in_sta,
+};
+
 const httpd_uri_t config_set_wifi_credentials = {
     .uri = "/api/v1/config/wifi",
     .method = HTTP_POST,
@@ -304,5 +323,6 @@ void start_config_server()
     httpd_register_uri_handler(server, &ap_list_get_uri);
     httpd_register_uri_handler(server, &system_info_get_uri);
     httpd_register_uri_handler(server, &config_set_wifi_credentials);
+    httpd_register_uri_handler(server, &system_reset_in_sta_uri);
     httpd_register_uri_handler(server, &system_ota);
 }

@@ -18,6 +18,7 @@
 #include "driver/gpio.h"
 #include "freertos/event_groups.h"
 #include "cJSON.h"
+#include "wifi_config.h"
 
 #define URL_SIZE    512
 #define TOKEN_SZ    128
@@ -34,6 +35,7 @@ typedef void command_ev_handler_t(char* cmd, int argc, char**argv);
 struct command_row_t {
     char *cmd;
     command_ev_handler_t *cb;
+    const char help[250];
 };
 
 struct Http_recv_st {
@@ -67,10 +69,16 @@ static bool parse_telegram_replay(char *data, int64_t *res)
 
         result = cJSON_GetObjectItem(root, "result");
         max = cJSON_GetArraySize(result);
+        if(max > 0) {
+            ESP_LOGI(TAG, "Start parse:%d messages", max);
+        } else {
+            /* Error print entry msg */
+            ESP_LOGW(TAG, "Telegram Data:'%s'", data);
+        }
 
         for(i = 0; i < max; i++) {
             cJSON *ele = cJSON_GetArrayItem(result, i);
-            
+
             int64_t chat_id, update_id;
             cJSON *message, *chat;
             char *text;
@@ -88,6 +96,10 @@ static bool parse_telegram_replay(char *data, int64_t *res)
 
                     msg.chat_id = chat_id;
                     msg.txt = strdup(text);
+                    if(msg.txt == NULL) {
+                        ESP_LOGE(TAG, "Out-of-Memory delete message");
+                        break;
+                    }
                     msg.update_id = update_id;
 
                     xQueueSend(cmd_queue, &msg, pdMS_TO_TICKS(250));
@@ -101,6 +113,7 @@ static bool parse_telegram_replay(char *data, int64_t *res)
         }
 
         *res = (int64_t) LastUpdateID;
+        cJSON_Delete(root);
         return true;
     }
 
@@ -222,6 +235,21 @@ void telegram_send_msg(char* msg_json)
     xQueueSend(tx_msg_queue, &msg_json, portMAX_DELAY);
 }
 
+void telegram_send_text(const char* text) {
+    char *ret, *tmp;
+    cJSON *root = cJSON_CreateObject();
+
+    cJSON_AddNumberToObject(root, "chat_id", (double)chatid);
+    cJSON_AddStringToObject(root, "text", text);
+
+    tmp = cJSON_PrintUnformatted(root);
+    ret = strdup(tmp);
+
+    telegram_send_msg(ret);
+
+    cJSON_Delete(root);
+}
+
 void telegram_tx_msg_task(void *pvParameters) {
     static struct Http_recv_st recvb;
     esp_http_client_handle_t client;
@@ -249,6 +277,11 @@ void telegram_tx_msg_task(void *pvParameters) {
         char* post_data;
         BaseType_t ret;
 
+        xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT,
+                                            pdFALSE,
+                                            pdFALSE,
+                                            portMAX_DELAY);
+
         ret = xQueueReceive(tx_msg_queue, &post_data, portMAX_DELAY);
         if(ret == pdTRUE) {
             esp_http_client_set_post_field(client, post_data, strlen(post_data));
@@ -265,6 +298,8 @@ void telegram_tx_msg_task(void *pvParameters) {
 
             esp_http_client_close(client);
             free(post_data);
+
+            vTaskDelay(pdMS_TO_TICKS(250));
         }
     }
 }
@@ -308,6 +343,11 @@ void telegram_rx_msg_task(void *pvParameters) {
     client = esp_http_client_init(&config);
 
     while (true) {
+        xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT,
+                                                    pdFALSE,
+                                                    pdFALSE,
+                                                    portMAX_DELAY);
+
         char* post_data = build_GetUpdate(UpdateID + 1);
         esp_http_client_set_header(client, "Content-Type", "application/json");
 
@@ -325,6 +365,8 @@ void telegram_rx_msg_task(void *pvParameters) {
         }
 
         esp_http_client_close(client);
+
+        vTaskDelay(pdMS_TO_TICKS(250));
     }
 
     vTaskDelete(NULL);
@@ -337,20 +379,83 @@ static void door_open(char*cmd, int argc, char**argv)
     drive_door_open(POWER_LINE_2);
 }
 
-static void abort_cmd(char*cmd, int argc, char**argv)
-{
-    abort();
-}
-
 static void reset_esp_cmd(char*cmd, int argc, char**argv)
 {
-    xTaskCreate(wait_and_restart_task, "Restart", 1024, NULL, 10, NULL);
+    int cmd_cnt, tx_msg_cnt;
+
+    cmd_cnt = uxQueueMessagesWaiting(cmd_queue);
+    tx_msg_cnt = uxQueueMessagesWaiting(tx_msg_queue);
+    if(cmd_cnt == 0 && tx_msg_cnt == 0) {
+        xTaskCreate(wait_and_restart_task, "Restart", 1024, NULL, 10, NULL);
+    } else {
+        ESP_LOGI(TAG, "Reset skiped");
+    }
 }
 
-struct command_row_t command_table[] = {
-    {.cmd = "/apri", .cb = door_open},
-//    {.cmd = "/abort", .cb = abort_cmd},
-    {.cmd = "/reset", .cb = reset_esp_cmd},
+static void set_power_driver_param(char*cmd, int argc, char**argv) {
+    esp_err_t err;
+
+    // /set_power_input_params name 123 123 12
+    if(argc != 5) {
+        telegram_send_text("Pochi parametri controlla");
+    } else {
+        uint32_t up, down, cycle;
+        char *name = argv[1];
+        char *txt;
+
+        up = strtol(argv[2], NULL, 10);
+        down = strtol(argv[3], NULL, 10);
+        cycle = strtol(argv[4], NULL, 10);
+
+        ESP_LOGI(TAG, "Up:%ld, Down:%ld, Cycle:%ld", up, down, cycle);
+
+        if(up == 0 || down == 0|| cycle == 0) {
+            telegram_send_text("Parametri sbagliati");
+            return;
+        }
+
+        err = PowerLine_ConfigSetParams(name, down, up, cycle, &txt);
+        if(err == ESP_OK) {
+            asprintf(&txt, "Impostati su:%s valori down:%ld up:%ld cycle:%ld", name, down, up, cycle);
+            telegram_send_text(txt);
+        } else {
+            telegram_send_text(txt);
+        }
+    }
+}
+
+static void cmd_set_mdns(char*cmd, int argc, char**argv) {
+    if(argc == 2) {
+        set_dns_hostname(argv[1]);
+        telegram_send_text(strdup("Fatto"));
+
+        reset_esp_cmd(NULL, 0, NULL);
+    } else {
+        telegram_send_text(strdup("Impossibile numero di argomenti sbagliato"));
+    }
+}
+
+const struct command_row_t command_table[] = {
+    {
+        .cmd = "/apri",
+        .cb = door_open,
+        .help = "Apre il cancello",
+    },
+    {
+        .cmd = "/reset",
+        .cb = reset_esp_cmd,
+        .help = "Riavvia la scheda apri cancello",
+    },
+    {
+        .cmd = "/imposta_tempi_apertura",
+        .cb = set_power_driver_param,
+        .help = "Imposta i valori di tempo del interruttore Tempo Aperto, Chiuso, Cicli di ripetizione.\nIl comando deve essere '/set_driver_time up_time_ms down_time_ms cycle'\nTutti i tempi sono espressi in ms\nNomi:`p1`,`p2`"
+    },
+    {
+        .cmd = "/set-mdns",
+        .cb = cmd_set_mdns,
+        .help = "Imposta il valore del record mDNS del apri cancello /set-mdns [nome]",
+    },
 };
 
 static void TelegramMsg_Delete(struct TelegramMsg_t *msg)
@@ -363,6 +468,8 @@ void telegram_commands_exec(void *pvParameters) {
     {
         struct TelegramMsg_t msg;
         BaseType_t resp;
+        bool help = false;
+        bool found_cmd = false;
 
         resp = xQueueReceive(cmd_queue, &msg, pdMS_TO_TICKS(2500));
         if(resp == pdTRUE) {
@@ -377,6 +484,15 @@ void telegram_commands_exec(void *pvParameters) {
                 ret = strtok_r(in, " ", &save_ptr);
                 in = save_ptr;
 
+                /* Check if command argument is --help */
+                if(ret) {
+                    if(!strcmp(ret, "--help")) {
+                        help = true;
+                        break;
+                    }
+                    ESP_LOGI(TAG, "Token:%s", ret);
+                }
+
                 argsv[argc] = ret;
 
                 if(ret == NULL)
@@ -385,16 +501,36 @@ void telegram_commands_exec(void *pvParameters) {
 
             /* Search for command inside command tables */
             for(i = 0; i < sizeof(command_table)/sizeof(command_table[0]); i++) {
-                struct command_row_t *row = &command_table[i];
+                const struct command_row_t *row = &command_table[i];
                 if(!strcmp(row->cmd, argsv[0])) {
-                    row->cb(argsv[0], argc, argsv);
+                    if(help) {
+                        telegram_send_text(row->help);
+                    } else {
+                        row->cb(argsv[0], argc, argsv);
+                    }
+
+                    found_cmd = true;
+                }
+            }
+
+            /* Print help menu */
+            if(found_cmd == false) {
+                ESP_LOGI(TAG, "Command not found print help menu");
+                for(i = 0; i < sizeof(command_table)/sizeof(command_table[0]); i++) {
+                    const struct command_row_t *row = &command_table[i];
+                    char *help_msg;
+
+                    asprintf(&help_msg,"Commando:%s\n\nHelp\n%s", row->cmd, row->help);
+
+                    ESP_LOGI(TAG, "%s", help_msg);
+
+                    telegram_send_text(help_msg);
                 }
             }
 
             TelegramMsg_Delete(&msg);
         }
     }
-    
 }
 
 void telegram_send_keyboard() {
@@ -468,7 +604,7 @@ void http_test_task(void *pvParameters) {
     cmd_queue = xQueueCreate(10, sizeof(struct TelegramMsg_t));
     tx_msg_queue = xQueueCreate(15, sizeof(char*));
 
-    xTaskCreate(telegram_commands_exec, "Telegram exec", 2048, NULL, 9, NULL);
+    xTaskCreate(telegram_commands_exec, "Telegram exec", 4096, NULL, 9, NULL);
     xTaskCreate(telegram_rx_msg_task, "Telegram recv", 4096, NULL, 10, NULL);
     xTaskCreate(telegram_tx_msg_task, "Telegram send-msg", 4096, NULL, 10, NULL);
 

@@ -30,30 +30,6 @@ bool get_scan_ap_no(int *p_ap_no, wifi_ap_record_t **p_ap_list)
     return true;
 }
 
-static bool nvs_read_wifi_credential() {
-    nvs_handle_t nvs_handle;
-    esp_err_t err;
-    size_t sz;
-
-    err = nvs_open(NVS_NAME, NVS_READONLY, &nvs_handle);
-    if(err != ESP_OK)
-        goto err;
-
-    sz = sizeof(ssid);
-    err = nvs_get_str(nvs_handle, NVS_WIFI_SSID__KEY, (char*) ssid, &sz);
-    if(err != ESP_OK)
-        goto err;
-
-    nvs_close(nvs_handle);
-    return true;
-
-err:
-    ESP_LOGE(TAG, "Can't read credentials");
-    memset(ssid, 0, sizeof(ssid));
-
-    return false;
-}
-
 static void erase_all_config() {
     nvs_handle_t nvs_handle;
     esp_err_t err;
@@ -100,7 +76,7 @@ static void wifi_event_scandone_cb(void* arg, esp_event_base_t event_base, int32
             ESP_LOGI(TAG, "Found: `%s` Restart and connect with ap", r->ssid);
             power_up_data.data.mode = STARTUP_MODE__STA;
             power_up_set_mode(STARTUP_MODE__STA);
-            
+
             esp_restart();
         } else if (strcmp((char*)&r->ssid, WIFI_ERASE_SSID) == 0) {
             ESP_LOGW(TAG, "Found erase network");
@@ -184,7 +160,7 @@ void wifi_init_softap(void)
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    nvs_read_wifi_credential();
+    nvs_read_wifi_credential(ssid, NULL);
     start_config_server();
 
     ESP_LOGI(TAG, "AP start");
@@ -193,4 +169,9 @@ void wifi_init_softap(void)
     ESP_LOGI(TAG, "wifi_init_softap finished. SSID:%s password:%s", WIFI_SSID, WIFI_PASS);
 
     xTaskCreate(search_network_task, "scan-networks", 2048, NULL, 10, NULL);
+
+    vTaskDelay(pdMS_TO_TICKS(60000));
+
+    power_up_set_mode(STARTUP_MODE__STA);
+    esp_restart();
 }
